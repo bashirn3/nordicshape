@@ -1,0 +1,218 @@
+import { Router } from 'express';
+import { fetchAll, requireSupabase } from '../lib/supabase.js';
+
+const router = Router();
+
+router.get('/:clientKey', async (req, res, next) => {
+  try {
+    const clientKey = req.params.clientKey;
+    const db = requireSupabase();
+    const [config, summary, eligibleProspects, recentSessions] = await Promise.all([
+      getConfig(db, clientKey),
+      getSummary(db, clientKey),
+      getEligibleProspectCount(db, clientKey),
+      getRecentSessions(db, clientKey),
+    ]);
+
+    res.json({
+      client_key: clientKey,
+      generated_at: new Date().toISOString(),
+      config,
+      summary: {
+        ...summary,
+        eligible_prospects: eligibleProspects,
+      },
+      recent_sessions: recentSessions,
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.post('/:clientKey/recompute-attribution', async (req, res, next) => {
+  try {
+    const result = await recomputeAttribution(req.params.clientKey);
+    res.json(result);
+  } catch (err) {
+    next(err);
+  }
+});
+
+async function getConfig(db, clientKey) {
+  const { data, error } = await db
+    .from('campaign_client_config')
+    .select('*')
+    .eq('client_key', clientKey)
+    .maybeSingle();
+  if (error) throw error;
+  if (!data) throw new Error(`Unknown campaign client "${clientKey}"`);
+  return data;
+}
+
+async function getSummary(db, clientKey) {
+  const sessionsRes = await db
+    .from('campaign_outbound_sessions')
+    .select('id, last_inbound_at, stop_reminders, stop_reason, opt_out_at')
+    .eq('client_key', clientKey)
+    .neq('source_system', 'manual_test');
+  if (sessionsRes.error) throw sessionsRes.error;
+
+  const sessions = sessionsRes.data || [];
+
+  return {
+    contacted: sessions.length,
+    replied: sessions.filter((session) => session.last_inbound_at).length,
+    opt_outs: sessions.filter((session) => session.opt_out_at || session.stop_reminders || session.stop_reason).length,
+  };
+}
+
+async function getEligibleProspectCount(db, clientKey) {
+  const { count, error } = await db
+    .from('campaign_prospects')
+    .select('*', { count: 'exact', head: true })
+    .eq('client_key', clientKey)
+    .neq('source_system', 'manual_test')
+    .eq('eligible', true)
+    .eq('status', 'pending');
+  if (error) throw error;
+  return count || 0;
+}
+
+async function getRecentSessions(db, clientKey) {
+  const { data, error } = await db
+    .from('campaign_outbound_sessions')
+    .select(`
+      id,
+      prospect_id,
+      source_customer_id,
+      number,
+      email,
+      first_outbound_at,
+      last_outbound_at,
+      last_inbound_at,
+      stop_reminders,
+      stop_reason,
+      booked_at,
+      attended_at,
+      prospect:campaign_prospects(first_name,last_name,email,normalized_phone)
+    `)
+    .eq('client_key', clientKey)
+    .neq('source_system', 'manual_test')
+    .order('first_outbound_at', { ascending: false })
+    .limit(50);
+  if (error) throw error;
+  return (data || []).map((row) => ({
+    ...row,
+    name: [row.prospect?.first_name, row.prospect?.last_name].filter(Boolean).join(' '),
+  }));
+}
+
+async function recomputeAttribution(clientKey) {
+  const db = requireSupabase();
+  const config = await getConfig(db, clientKey);
+  const [sessions, appointments, existing] = await Promise.all([
+    fetchAll(() =>
+      db
+        .from('campaign_outbound_sessions')
+        .select('*')
+        .eq('client_key', clientKey)
+        .neq('source_system', 'manual_test')
+        .order('first_outbound_at', { ascending: true })
+    ),
+    fetchAll(() =>
+      db
+        .from('campaign_appointments')
+        .select('*')
+        .eq('client_key', clientKey)
+        .eq('deleted', false)
+        .order('source_created_at', { ascending: true })
+    ),
+    fetchAll(() =>
+      db
+        .from('campaign_attribution')
+        .select('id')
+        .eq('client_key', clientKey)
+    ),
+  ]);
+
+  if (existing.length) {
+    const { error } = await db
+      .from('campaign_attribution')
+      .delete()
+      .eq('client_key', clientKey);
+    if (error) throw error;
+  }
+
+  const sessionsByCustomer = new Map();
+  for (const session of sessions) {
+    if (!session.source_customer_id) continue;
+    if (!sessionsByCustomer.has(session.source_customer_id)) sessionsByCustomer.set(session.source_customer_id, []);
+    sessionsByCustomer.get(session.source_customer_id).push(session);
+  }
+
+  const seenCustomers = new Set();
+  const rows = [];
+  for (const appointment of appointments) {
+    const candidates = sessionsByCustomer.get(appointment.source_customer_id) || [];
+    const match = candidates.find((session) => withinWindow(session.first_outbound_at, appointment.source_created_at, config.attribution_days));
+    if (!match) continue;
+
+    const attended = ['CHECKED_IN', 'PAID'].includes(String(appointment.state || '').toUpperCase());
+    const active = String(appointment.activation_state || '').toUpperCase() !== 'CANCELED';
+    const unique = !seenCustomers.has(appointment.source_customer_id);
+    const billable = Boolean(attended && active && unique);
+    seenCustomers.add(appointment.source_customer_id);
+
+    rows.push({
+      client_key: clientKey,
+      session_id: match.id,
+      prospect_id: match.prospect_id,
+      appointment_id: appointment.id,
+      source_customer_id: appointment.source_customer_id,
+      first_contact_at: match.first_outbound_at,
+      appointment_created_at: appointment.source_created_at,
+      appointment_date: appointment.appointment_date,
+      attended_at: attended ? appointment.source_updated_at || new Date().toISOString() : null,
+      within_attribution_window: true,
+      unique_customer: unique,
+      billable,
+      rejection_reason: billable ? null : rejectionReason({ attended, active, unique }),
+      raw_data: { session: match, appointment },
+    });
+  }
+
+  if (rows.length) {
+    const { error } = await db.from('campaign_attribution').insert(rows);
+    if (error) throw error;
+  }
+
+  return {
+    ok: true,
+    client_key: clientKey,
+    appointments_scanned: appointments.length,
+    attribution_rows: rows.length,
+    billable: rows.filter((row) => row.billable).length,
+  };
+}
+
+function withinWindow(firstContactAt, appointmentCreatedAt, days) {
+  const start = new Date(firstContactAt).getTime();
+  const end = new Date(appointmentCreatedAt).getTime();
+  if (!Number.isFinite(start) || !Number.isFinite(end)) return false;
+  return end >= start && end <= start + Number(days || 30) * 86400000;
+}
+
+function rejectionReason({ attended, active, unique }) {
+  if (!active) return 'appointment_canceled';
+  if (!attended) return 'not_attended';
+  if (!unique) return 'duplicate_customer';
+  return 'not_billable';
+}
+
+function normalizePhone(value) {
+  let phone = String(value || '').replace(/[^0-9]/g, '');
+  if (phone.startsWith('0')) phone = `358${phone.slice(1)}`;
+  return phone;
+}
+
+export default router;
