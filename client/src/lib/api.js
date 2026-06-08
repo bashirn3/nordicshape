@@ -4,8 +4,8 @@ const api = axios.create({
   baseURL: import.meta.env.VITE_API_BASE_URL || '/api',
 });
 
-export async function fetchCampaign(clientKey) {
-  const { data } = await api.get(`/campaigns/${clientKey}`);
+export async function fetchCampaign(clientKey, params = {}) {
+  const { data } = await api.get(`/campaigns/${clientKey}`, { params });
   return data;
 }
 

@@ -213,6 +213,27 @@ button:disabled {
   overflow: auto;
 }
 
+.table-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 10px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.pagination {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.pagination button {
+  padding: 7px 11px;
+  font-size: 12px;
+}
+
 table {
   width: 100%;
   border-collapse: collapse;
@@ -451,5 +472,10 @@ tr:last-child td {
   .kpis,
   .settings-grid {
     grid-template-columns: 1fr;
+  }
+
+  .table-meta {
+    align-items: flex-start;
+    flex-direction: column;
   }
 }

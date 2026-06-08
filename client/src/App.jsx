@@ -6,13 +6,18 @@ import ChatViewer from './components/ChatViewer.jsx';
 
 const DEFAULT_CLIENT = import.meta.env.VITE_CAMPAIGN_CLIENT_KEY || 'nordicshape';
 const DISPLAY_TIME_ZONE = 'Europe/Helsinki';
+const SESSIONS_PER_PAGE = 50;
 
 export default function App() {
   const [clientKey] = useState(DEFAULT_CLIENT);
   const [selectedChat, setSelectedChat] = useState(null);
+  const [sessionsPage, setSessionsPage] = useState(1);
   const campaignQuery = useQuery({
-    queryKey: ['campaign', clientKey],
-    queryFn: () => fetchCampaign(clientKey),
+    queryKey: ['campaign', clientKey, sessionsPage],
+    queryFn: () => fetchCampaign(clientKey, {
+      sessions_page: sessionsPage,
+      sessions_limit: SESSIONS_PER_PAGE,
+    }),
     refetchInterval: 60_000,
   });
 
@@ -43,8 +48,13 @@ export default function App() {
       <KpiGrid summary={data.summary || {}} />
       <SettingsPanel config={data.config} clientKey={clientKey} />
 
-      <Panel title="Recent Outreach" description="Last 50 contacted prospects.">
-        <SessionsTable rows={data.recent_sessions || []} onOpenChat={setSelectedChat} />
+      <Panel title="Outreach History" description="Showing contacted prospects and their latest campaign status.">
+        <SessionsTable
+          rows={data.recent_sessions || []}
+          pagination={data.recent_sessions_pagination}
+          onOpenChat={setSelectedChat}
+          onPageChange={setSessionsPage}
+        />
       </Panel>
 
       {selectedChat && (
@@ -147,40 +157,61 @@ function Panel({ title, description, children }) {
   );
 }
 
-function SessionsTable({ rows, onOpenChat }) {
+function SessionsTable({ rows, pagination, onOpenChat, onPageChange }) {
   if (!rows.length) return <p className="empty">No outreach sessions yet.</p>;
+  const total = pagination?.total ?? rows.length;
+  const page = pagination?.page ?? 1;
+  const limit = pagination?.limit ?? rows.length;
+  const totalPages = pagination?.total_pages ?? 1;
+  const start = total === 0 ? 0 : (page - 1) * limit + 1;
+  const end = Math.min(total, start + rows.length - 1);
+
   return (
-    <div className="table-wrap">
-      <table>
-        <thead>
-          <tr>
-            <th>Number</th>
-            <th>Contacted</th>
-            <th>Reply</th>
-            <th>Status</th>
-            <th></th>
-          </tr>
-        </thead>
-        <tbody>
-          {rows.map((row) => (
-            <tr key={row.id}>
-              <td>
-                <strong>{row.name || row.number}</strong>
-                <small className="cell-sub">{row.number}</small>
-              </td>
-              <td>{formatDate(row.first_outbound_at)}</td>
-              <td>{row.last_inbound_at ? formatDate(row.last_inbound_at) : '-'}</td>
-              <td><StatusPill status={statusForSession(row)} /></td>
-              <td>
-                <button className="table-action" type="button" onClick={() => onOpenChat(row)}>
-                  View chat
-                </button>
-              </td>
+    <>
+      <div className="table-meta">
+        <span>Showing {start}-{end} of {total}</span>
+        <div className="pagination">
+          <button className="secondary" type="button" disabled={page <= 1} onClick={() => onPageChange(page - 1)}>
+            Previous
+          </button>
+          <span>Page {page} of {totalPages}</span>
+          <button className="secondary" type="button" disabled={page >= totalPages} onClick={() => onPageChange(page + 1)}>
+            Next
+          </button>
+        </div>
+      </div>
+      <div className="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Number</th>
+              <th>Contacted</th>
+              <th>Reply</th>
+              <th>Status</th>
+              <th></th>
             </tr>
-          ))}
-        </tbody>
-      </table>
-    </div>
+          </thead>
+          <tbody>
+            {rows.map((row) => (
+              <tr key={row.id}>
+                <td>
+                  <strong>{row.name || row.number}</strong>
+                  <small className="cell-sub">{row.number}</small>
+                </td>
+                <td>{formatDate(row.first_outbound_at)}</td>
+                <td>{row.last_inbound_at ? formatDate(row.last_inbound_at) : '-'}</td>
+                <td><StatusPill status={statusForSession(row)} /></td>
+                <td>
+                  <button className="table-action" type="button" onClick={() => onOpenChat(row)}>
+                    View chat
+                  </button>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </>
   );
 }
 

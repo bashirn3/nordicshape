@@ -6,12 +6,14 @@ const router = Router();
 router.get('/:clientKey', async (req, res, next) => {
   try {
     const clientKey = req.params.clientKey;
+    const sessionsPage = boundedInt(req.query.sessions_page, 1, 10_000, 1);
+    const sessionsLimit = boundedInt(req.query.sessions_limit, 1, 100, 50);
     const db = requireSupabase();
-    const [config, summary, eligibleProspects, recentSessions] = await Promise.all([
+    const [config, summary, eligibleProspects, sessionPage] = await Promise.all([
       getConfig(db, clientKey),
       getSummary(db, clientKey),
       getEligibleProspectCount(db, clientKey),
-      getRecentSessions(db, clientKey),
+      getRecentSessions(db, clientKey, { page: sessionsPage, limit: sessionsLimit }),
     ]);
 
     res.json({
@@ -22,7 +24,8 @@ router.get('/:clientKey', async (req, res, next) => {
         ...summary,
         eligible_prospects: eligibleProspects,
       },
-      recent_sessions: recentSessions,
+      recent_sessions: sessionPage.rows,
+      recent_sessions_pagination: sessionPage.pagination,
     });
   } catch (err) {
     next(err);
@@ -78,8 +81,10 @@ async function getEligibleProspectCount(db, clientKey) {
   return count || 0;
 }
 
-async function getRecentSessions(db, clientKey) {
-  const { data, error } = await db
+async function getRecentSessions(db, clientKey, { page, limit }) {
+  const from = (page - 1) * limit;
+  const to = from + limit - 1;
+  const { data, error, count } = await db
     .from('campaign_outbound_sessions')
     .select(`
       id,
@@ -95,16 +100,30 @@ async function getRecentSessions(db, clientKey) {
       booked_at,
       attended_at,
       prospect:campaign_prospects(first_name,last_name,email,normalized_phone)
-    `)
+    `, { count: 'exact' })
     .eq('client_key', clientKey)
     .neq('source_system', 'manual_test')
     .order('first_outbound_at', { ascending: false })
-    .limit(50);
+    .range(from, to);
   if (error) throw error;
-  return (data || []).map((row) => ({
-    ...row,
-    name: [row.prospect?.first_name, row.prospect?.last_name].filter(Boolean).join(' '),
-  }));
+  return {
+    rows: (data || []).map((row) => ({
+      ...row,
+      name: [row.prospect?.first_name, row.prospect?.last_name].filter(Boolean).join(' '),
+    })),
+    pagination: {
+      page,
+      limit,
+      total: count || 0,
+      total_pages: Math.max(1, Math.ceil((count || 0) / limit)),
+    },
+  };
+}
+
+function boundedInt(value, min, max, fallback) {
+  const parsed = Number.parseInt(value, 10);
+  if (!Number.isFinite(parsed)) return fallback;
+  return Math.min(max, Math.max(min, parsed));
 }
 
 async function recomputeAttribution(clientKey) {
