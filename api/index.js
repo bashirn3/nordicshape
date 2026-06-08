@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url';
 import campaignsRouter from './routes/campaigns.js';
 import settingsRouter from './routes/settings.js';
 import chatsRouter from './routes/chats.js';
+import syncRouter from './routes/sync.js';
 
 const app = express();
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -24,6 +25,7 @@ api.get('/health', (_req, res) => res.json({ ok: true }));
 api.use('/campaigns', campaignsRouter);
 api.use('/settings', settingsRouter);
 api.use('/chats', chatsRouter);
+api.use('/sync', syncRouter);
 
 app.use('/api', api);
 app.use('/api', (_req, res) => {
@@ -37,7 +39,7 @@ app.use((req, res, next) => {
 
 app.use((err, _req, res, _next) => {
   console.error('[api] error', err);
-  res.status(500).json({ error: err.message || 'internal error' });
+  res.status(err.status || 500).json({ error: err.message || 'internal error' });
 });
 
 export default app;

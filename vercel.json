@@ -2,6 +2,12 @@
   "version": 2,
   "buildCommand": "npm run build",
   "outputDirectory": "client/dist",
+  "crons": [
+    {
+      "path": "/api/sync/phorest/nordicshape",
+      "schedule": "17 3 * * *"
+    }
+  ],
   "rewrites": [
     {
       "source": "/(.*)",

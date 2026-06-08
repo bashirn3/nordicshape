@@ -13,6 +13,7 @@
     "phorest:smoke": "node scripts/phorest-client.js smoke",
     "phorest:clients": "node scripts/phorest-client.js clients",
     "phorest:appointments": "node scripts/phorest-client.js appointments",
+    "phorest:sync": "node scripts/sync-phorest-data.js",
     "import:csv": "node scripts/import-campaign-csv.js"
   },
   "dependencies": {
