@@ -8,12 +8,13 @@ router.get('/:clientKey', async (req, res, next) => {
     const clientKey = req.params.clientKey;
     const sessionsPage = boundedInt(req.query.sessions_page, 1, 10_000, 1);
     const sessionsLimit = boundedInt(req.query.sessions_limit, 1, 100, 50);
+    const sessionsStatus = normalizeSessionStatus(req.query.sessions_status);
     const db = requireSupabase();
     const [config, summary, eligibleProspects, sessionPage] = await Promise.all([
       getConfig(db, clientKey),
       getSummary(db, clientKey),
       getEligibleProspectCount(db, clientKey),
-      getRecentSessions(db, clientKey, { page: sessionsPage, limit: sessionsLimit }),
+      getRecentSessions(db, clientKey, { page: sessionsPage, limit: sessionsLimit, status: sessionsStatus }),
     ]);
 
     res.json({
@@ -92,10 +93,10 @@ async function getEligibleProspectCount(db, clientKey) {
   return count || 0;
 }
 
-async function getRecentSessions(db, clientKey, { page, limit }) {
+async function getRecentSessions(db, clientKey, { page, limit, status }) {
   const from = (page - 1) * limit;
   const to = from + limit - 1;
-  const { data, error, count } = await db
+  let query = db
     .from('campaign_outbound_sessions')
     .select(`
       id,
@@ -114,7 +115,11 @@ async function getRecentSessions(db, clientKey, { page, limit }) {
       prospect:campaign_prospects(first_name,last_name,email,normalized_phone)
     `, { count: 'exact' })
     .eq('client_key', clientKey)
-    .neq('source_system', 'manual_test')
+    .neq('source_system', 'manual_test');
+
+  query = applySessionStatusFilter(query, status);
+
+  const { data, error, count } = await query
     .order('first_outbound_at', { ascending: false })
     .range(from, to);
   if (error) throw error;
@@ -127,6 +132,7 @@ async function getRecentSessions(db, clientKey, { page, limit }) {
     pagination: {
       page,
       limit,
+      status,
       total: count || 0,
       total_pages: Math.max(1, Math.ceil((count || 0) / limit)),
     },
@@ -137,6 +143,33 @@ function boundedInt(value, min, max, fallback) {
   const parsed = Number.parseInt(value, 10);
   if (!Number.isFinite(parsed)) return fallback;
   return Math.min(max, Math.max(min, parsed));
+}
+
+function normalizeSessionStatus(value) {
+  const allowed = new Set(['all', 'active', 'reminded', 'replied', 'opted_out']);
+  const normalized = String(value || 'all').toLowerCase();
+  return allowed.has(normalized) ? normalized : 'all';
+}
+
+function applySessionStatusFilter(query, status) {
+  if (status === 'active') return onlyOpen(query).eq('outbound_count', 1);
+  if (status === 'reminded') return onlyOpen(query).gt('outbound_count', 1);
+  if (status === 'replied') return onlyNotStopped(query).not('last_inbound_at', 'is', null);
+  if (status === 'opted_out') {
+    return query.or('opt_out_at.not.is.null,stop_reminders.eq.true,stop_reason.not.is.null');
+  }
+  return query;
+}
+
+function onlyOpen(query) {
+  return onlyNotStopped(query).is('last_inbound_at', null);
+}
+
+function onlyNotStopped(query) {
+  return query
+    .is('opt_out_at', null)
+    .eq('stop_reminders', false)
+    .is('stop_reason', null);
 }
 
 function isReminderDue(session, attributedSessionIds) {

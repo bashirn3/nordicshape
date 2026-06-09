@@ -7,16 +7,25 @@ import ChatViewer from './components/ChatViewer.jsx';
 const DEFAULT_CLIENT = import.meta.env.VITE_CAMPAIGN_CLIENT_KEY || 'nordicshape';
 const DISPLAY_TIME_ZONE = 'Europe/Helsinki';
 const SESSIONS_PER_PAGE = 50;
+const SESSION_FILTERS = [
+  { value: 'all', label: 'All' },
+  { value: 'active', label: 'Active' },
+  { value: 'reminded', label: 'Reminded' },
+  { value: 'replied', label: 'Replied' },
+  { value: 'opted_out', label: 'Opted out' },
+];
 
 export default function App() {
   const [clientKey] = useState(DEFAULT_CLIENT);
   const [selectedChat, setSelectedChat] = useState(null);
   const [sessionsPage, setSessionsPage] = useState(1);
+  const [sessionFilter, setSessionFilter] = useState('all');
   const campaignQuery = useQuery({
-    queryKey: ['campaign', clientKey, sessionsPage],
+    queryKey: ['campaign', clientKey, sessionsPage, sessionFilter],
     queryFn: () => fetchCampaign(clientKey, {
       sessions_page: sessionsPage,
       sessions_limit: SESSIONS_PER_PAGE,
+      sessions_status: sessionFilter,
     }),
     refetchInterval: 60_000,
   });
@@ -52,6 +61,11 @@ export default function App() {
         <SessionsTable
           rows={data.recent_sessions || []}
           pagination={data.recent_sessions_pagination}
+          filter={sessionFilter}
+          onFilterChange={(filter) => {
+            setSessionFilter(filter);
+            setSessionsPage(1);
+          }}
           onOpenChat={setSelectedChat}
           onPageChange={setSessionsPage}
         />
@@ -159,17 +173,43 @@ function Panel({ title, description, children }) {
   );
 }
 
-function SessionsTable({ rows, pagination, onOpenChat, onPageChange }) {
-  if (!rows.length) return <p className="empty">No outreach sessions yet.</p>;
+function SessionsTable({ rows, pagination, filter, onFilterChange, onOpenChat, onPageChange }) {
   const total = pagination?.total ?? rows.length;
   const page = pagination?.page ?? 1;
-  const limit = pagination?.limit ?? rows.length;
+  const limit = pagination?.limit ?? (rows.length || SESSIONS_PER_PAGE);
   const totalPages = pagination?.total_pages ?? 1;
   const start = total === 0 ? 0 : (page - 1) * limit + 1;
-  const end = Math.min(total, start + rows.length - 1);
+  const end = total === 0 ? 0 : Math.min(total, start + rows.length - 1);
+
+  const controls = (
+    <div className="table-toolbar">
+      <div className="segmented" aria-label="Outreach status filter">
+        {SESSION_FILTERS.map((option) => (
+          <button
+            key={option.value}
+            type="button"
+            className={filter === option.value ? 'active' : ''}
+            onClick={() => onFilterChange(option.value)}
+          >
+            {option.label}
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+
+  if (!rows.length) {
+    return (
+      <>
+        {controls}
+        <p className="empty">No outreach sessions found for this filter.</p>
+      </>
+    );
+  }
 
   return (
     <>
+      {controls}
       <div className="table-meta">
         <span>Showing {start}-{end} of {total}</span>
         <div className="pagination">

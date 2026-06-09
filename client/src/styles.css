@@ -213,6 +213,35 @@ button:disabled {
   overflow: auto;
 }
 
+.table-toolbar {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.segmented {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 4px;
+  border: 1px solid var(--rule);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.5);
+}
+
+.segmented button {
+  padding: 7px 11px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.segmented button.active {
+  background: var(--accent-strong);
+  color: white;
+}
+
 .table-meta {
   display: flex;
   align-items: center;
@@ -477,5 +506,9 @@ tr:last-child td {
   .table-meta {
     align-items: flex-start;
     flex-direction: column;
+  }
+
+  .segmented {
+    border-radius: 18px;
   }
 }
