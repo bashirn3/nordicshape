@@ -82,7 +82,7 @@ function buildSyntheticOutbound(sessions, statusByMessageId) {
         id: `session-${session.id}`,
         type: 'ai',
         text: message,
-        created_at: session.last_outbound_at || session.first_outbound_at,
+        created_at: session.first_outbound_at || session.last_outbound_at,
         delivery_status: status?.status || 'sent',
         provider_message_id: session.provider_message_id || null,
         source: 'outbound_session',
