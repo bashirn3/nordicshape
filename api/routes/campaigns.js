@@ -53,19 +53,30 @@ async function getConfig(db, clientKey) {
 }
 
 async function getSummary(db, clientKey) {
-  const sessionsRes = await db
-    .from('campaign_outbound_sessions')
-    .select('id, last_inbound_at, stop_reminders, stop_reason, opt_out_at')
-    .eq('client_key', clientKey)
-    .neq('source_system', 'manual_test');
+  const [sessionsRes, attributionRes] = await Promise.all([
+    db
+      .from('campaign_outbound_sessions')
+      .select('id, last_inbound_at, last_outbound_at, outbound_count, stop_reminders, stop_reason, opt_out_at')
+      .eq('client_key', clientKey)
+      .neq('source_system', 'manual_test'),
+    db
+      .from('campaign_attribution')
+      .select('session_id')
+      .eq('client_key', clientKey)
+      .eq('within_attribution_window', true),
+  ]);
   if (sessionsRes.error) throw sessionsRes.error;
+  if (attributionRes.error) throw attributionRes.error;
 
   const sessions = sessionsRes.data || [];
+  const attributedSessionIds = new Set((attributionRes.data || []).map((row) => row.session_id).filter(Boolean));
 
   return {
     contacted: sessions.length,
     replied: sessions.filter((session) => session.last_inbound_at).length,
     opt_outs: sessions.filter((session) => session.opt_out_at || session.stop_reminders || session.stop_reason).length,
+    reminded: sessions.filter((session) => Number(session.outbound_count || 0) > 1).length,
+    reminder_due: sessions.filter((session) => isReminderDue(session, attributedSessionIds)).length,
   };
 }
 
@@ -95,6 +106,7 @@ async function getRecentSessions(db, clientKey, { page, limit }) {
       first_outbound_at,
       last_outbound_at,
       last_inbound_at,
+      outbound_count,
       stop_reminders,
       stop_reason,
       booked_at,
@@ -110,6 +122,7 @@ async function getRecentSessions(db, clientKey, { page, limit }) {
     rows: (data || []).map((row) => ({
       ...row,
       name: [row.prospect?.first_name, row.prospect?.last_name].filter(Boolean).join(' '),
+      reminder_sent_at: Number(row.outbound_count || 0) > 1 ? row.last_outbound_at : null,
     })),
     pagination: {
       page,
@@ -124,6 +137,16 @@ function boundedInt(value, min, max, fallback) {
   const parsed = Number.parseInt(value, 10);
   if (!Number.isFinite(parsed)) return fallback;
   return Math.min(max, Math.max(min, parsed));
+}
+
+function isReminderDue(session, attributedSessionIds) {
+  if (attributedSessionIds.has(session.id)) return false;
+  if (session.last_inbound_at || session.opt_out_at || session.stop_reminders || session.stop_reason) return false;
+  if (Number(session.outbound_count || 0) !== 1) return false;
+
+  const lastOutbound = new Date(session.last_outbound_at).getTime();
+  if (!Number.isFinite(lastOutbound)) return false;
+  return lastOutbound < Date.now() - 48 * 3600 * 1000;
 }
 
 async function recomputeAttribution(clientKey) {
