@@ -62,7 +62,7 @@ async function getSummary(db, clientKey) {
       .neq('source_system', 'manual_test'),
     db
       .from('campaign_attribution')
-      .select('session_id')
+      .select('session_id, appointment_created_at, appointment_date')
       .eq('client_key', clientKey)
       .eq('within_attribution_window', true),
   ]);
@@ -76,6 +76,7 @@ async function getSummary(db, clientKey) {
     contacted: sessions.length,
     replied: sessions.filter((session) => session.last_inbound_at).length,
     opt_outs: sessions.filter((session) => session.opt_out_at || session.stop_reminders || session.stop_reason).length,
+    booked: attributedSessionIds.size,
     reminded: sessions.filter((session) => Number(session.outbound_count || 0) > 1).length,
     reminder_due: sessions.filter((session) => isReminderDue(session, attributedSessionIds)).length,
   };
@@ -96,6 +97,18 @@ async function getEligibleProspectCount(db, clientKey) {
 async function getRecentSessions(db, clientKey, { page, limit, status }) {
   const from = (page - 1) * limit;
   const to = from + limit - 1;
+  const attributionRows = await getSessionAttributions(db, clientKey);
+  const attributionBySession = new Map();
+  for (const row of attributionRows) {
+    if (!row.session_id || attributionBySession.has(row.session_id)) continue;
+    attributionBySession.set(row.session_id, row);
+  }
+  const bookedSessionIds = Array.from(attributionBySession.keys());
+
+  if (status === 'booked' && bookedSessionIds.length === 0) {
+    return emptySessionPage({ page, limit, status });
+  }
+
   let query = db
     .from('campaign_outbound_sessions')
     .select(`
@@ -117,7 +130,7 @@ async function getRecentSessions(db, clientKey, { page, limit, status }) {
     .eq('client_key', clientKey)
     .neq('source_system', 'manual_test');
 
-  query = applySessionStatusFilter(query, status);
+  query = applySessionStatusFilter(query, status, bookedSessionIds);
 
   const { data, error, count } = await query
     .order('first_outbound_at', { ascending: false })
@@ -128,6 +141,8 @@ async function getRecentSessions(db, clientKey, { page, limit, status }) {
       ...row,
       name: [row.prospect?.first_name, row.prospect?.last_name].filter(Boolean).join(' '),
       reminder_sent_at: Number(row.outbound_count || 0) > 1 ? row.last_outbound_at : null,
+      booked_at: attributionBySession.get(row.id)?.appointment_created_at || row.booked_at,
+      appointment_date: attributionBySession.get(row.id)?.appointment_date || null,
     })),
     pagination: {
       page,
@@ -139,6 +154,30 @@ async function getRecentSessions(db, clientKey, { page, limit, status }) {
   };
 }
 
+async function getSessionAttributions(db, clientKey) {
+  return fetchAll(() =>
+    db
+      .from('campaign_attribution')
+      .select('session_id, appointment_created_at, appointment_date, billable, rejection_reason')
+      .eq('client_key', clientKey)
+      .eq('within_attribution_window', true)
+      .order('appointment_created_at', { ascending: true }),
+  );
+}
+
+function emptySessionPage({ page, limit, status }) {
+  return {
+    rows: [],
+    pagination: {
+      page,
+      limit,
+      status,
+      total: 0,
+      total_pages: 1,
+    },
+  };
+}
+
 function boundedInt(value, min, max, fallback) {
   const parsed = Number.parseInt(value, 10);
   if (!Number.isFinite(parsed)) return fallback;
@@ -146,14 +185,15 @@ function boundedInt(value, min, max, fallback) {
 }
 
 function normalizeSessionStatus(value) {
-  const allowed = new Set(['all', 'active', 'reminded', 'replied', 'opted_out']);
+  const allowed = new Set(['all', 'active', 'reminded', 'booked', 'replied', 'opted_out']);
   const normalized = String(value || 'all').toLowerCase();
   return allowed.has(normalized) ? normalized : 'all';
 }
 
-function applySessionStatusFilter(query, status) {
+function applySessionStatusFilter(query, status, bookedSessionIds) {
   if (status === 'active') return onlyOpen(query).eq('outbound_count', 1);
   if (status === 'reminded') return onlyOpen(query).gt('outbound_count', 1);
+  if (status === 'booked') return query.in('id', bookedSessionIds);
   if (status === 'replied') return onlyNotStopped(query).not('last_inbound_at', 'is', null);
   if (status === 'opted_out') {
     return query.or('opt_out_at.not.is.null,stop_reminders.eq.true,stop_reason.not.is.null');

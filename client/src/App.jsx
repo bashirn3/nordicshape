@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Bell, Clock, MessageCircle, Play, Settings, X } from 'lucide-react';
+import { Bell, CalendarCheck, Clock, MessageCircle, Play, Settings, X } from 'lucide-react';
 import { fetchCampaign, fetchChat, updateSettings } from './lib/api.js';
 import ChatViewer from './components/ChatViewer.jsx';
 
@@ -11,6 +11,7 @@ const SESSION_FILTERS = [
   { value: 'all', label: 'All' },
   { value: 'active', label: 'Active' },
   { value: 'reminded', label: 'Reminded' },
+  { value: 'booked', label: 'Booked' },
   { value: 'replied', label: 'Replied' },
   { value: 'opted_out', label: 'Opted out' },
 ];
@@ -96,6 +97,7 @@ function KpiGrid({ summary }) {
     { label: 'Contacted', value: summary.contacted, icon: MessageCircle },
     { label: 'Replied', value: summary.replied, icon: MessageCircle },
     { label: 'Opt-outs', value: summary.opt_outs, icon: X },
+    { label: 'Booked', value: summary.booked, icon: CalendarCheck },
     { label: 'Reminded', value: summary.reminded, icon: Bell },
     { label: 'Reminder due', value: summary.reminder_due, icon: Clock },
   ];
@@ -229,6 +231,7 @@ function SessionsTable({ rows, pagination, filter, onFilterChange, onOpenChat, o
               <th>Number</th>
               <th>Contacted</th>
               <th>Reminder</th>
+              <th>Booking</th>
               <th>Reply</th>
               <th>Status</th>
               <th></th>
@@ -243,6 +246,7 @@ function SessionsTable({ rows, pagination, filter, onFilterChange, onOpenChat, o
                 </td>
                 <td>{formatDate(row.first_outbound_at)}</td>
                 <td>{row.reminder_sent_at ? formatDate(row.reminder_sent_at) : '-'}</td>
+                <td>{row.booked_at ? formatDate(row.booked_at) : '-'}</td>
                 <td>{row.last_inbound_at ? formatDate(row.last_inbound_at) : '-'}</td>
                 <td><StatusPill status={statusForSession(row)} /></td>
                 <td>
@@ -294,6 +298,7 @@ function StatusPill({ status }) {
 
 function statusForSession(session) {
   if (session.opt_out_at || session.stop_reminders || session.stop_reason) return 'opted_out';
+  if (session.booked_at) return 'booked';
   if (session.last_inbound_at) return 'replied';
   if (Number(session.outbound_count || 0) > 1) return 'reminded';
   return 'active';
@@ -305,6 +310,7 @@ function statusMeta(status) {
     return { label: 'Opted out', tone: 'danger' };
   }
   if (normalized === 'replied') return { label: 'Replied', tone: 'success' };
+  if (normalized === 'booked') return { label: 'Booked', tone: 'success' };
   if (normalized === 'reminded') return { label: 'Reminded', tone: 'info' };
   if (normalized === 'active') return { label: 'Active', tone: 'neutral' };
   if (normalized === 'contacted') return { label: 'Contacted', tone: 'info' };
